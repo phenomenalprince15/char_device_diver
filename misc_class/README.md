@@ -183,6 +183,9 @@ wiki@pi:~/Linux-Kernel-Programming-Part-2/ch1/miscdrv1$
 
 ### dd utility to test our driver
 
+- read: dd if=/dev/driver_miscdrv of=readtest bs=4k count=1
+- write: dd if=/dev/urandom of=/dev/driver_miscdrv bs=4k count=1
+
 ```
 This part is reading from driver
 
@@ -220,3 +223,125 @@ wiki@pi:~/Linux-Kernel-Programming-Part-2/ch1/miscdrv1$ sudo dmesg
 [ 1478.672172] Closing "/dev/driver_miscdrv"
 wiki@pi:~/Linux-Kernel-Programming-Part-2/ch1/miscdrv1$ 
 ```
+
+### Copying data from kernel to user space and vice-versa
+- A primary job of the device driver is to enable user space applications to transparently both read and write data to peripheral hardware device (chip or doesn't have to be hardware),
+treating device as a simple regular file.
+- To read data from device, application opens the device file corressponding to that device, thus obtaining a file descriptor (fd) then issues read sys call using fd.
+
+#### Kernel APIs to perform data transfer
+- Assume your driver has read in hardware data and it's now present in a kernel memory buffer. How do we transfer it to user space ?
+- Simple approach: Use memcpy() but no, it's insecure + arch-dependent.
+- Kernel provides a couple of inline functinos copy_to_user() and copy_from_user().
+
+```
+include linux/uaccess.h
+
+unsigned long copy_to_user(void __user *to, const void *from, unsigned long n)
+unsigned long copt_from_user(void *to, const void __user *from, unsigned long n)
+
+Both take 3 params: to (pointer desination buffer), from (pointer source buffer) and n (number of bytes to copy)
+
+return value is number of uncopied bytes. 0 means success and non-zero means number of bytes not copied (0/-E convention)
+return an error indicating an I/O fault returning -EIO or -EFAULT (which sets errno in user space to positive counterpart).
+```
+
+![copy to user](../Images/copy_to_user.jpg)
+
+https://stackoverflow.com/questions/14970698/copy-to-user-vs-memcpy
+
+
+### Writing misc driver, interacting kernel and user space (2 methods to check)
+
+- Our test_driver is reading and writing into the user space and from the user space via our kernel space read and write for test_driver.
+- dmesg shows while reading and writing.
+
+### we could just use dd utility for read and write
+- read: dd if=/dev/test_driver of=readtest bs=4k count=1
+- hexdump readtest
+- cat readtest
+
+- echo "Time is illusion!" > inputfile
+- write: dd if=inputfile of=/dev/test_driver bs=4k count=1
+- read again: dd if=/dev/test_driver of=readtest bs=4k count=1
+- hexdump readtest
+- cat readtest
+
+### Using our own user space code
+
+```
+wiki@pi:~/Linux-Kernel-Programming-Part-2/ch1/miscdrv_rdwr/test$ ls
+Makefile  Module.symvers  mdriver.c  mdriver.ko  mdriver.mod  mdriver.mod.c  mdriver.mod.o  mdriver.o  modules.order  test  user_test.c
+wiki@pi:~/Linux-Kernel-Programming-Part-2/ch1/miscdrv_rdwr/test$ sudo dmesg -C
+wiki@pi:~/Linux-Kernel-Programming-Part-2/ch1/miscdrv_rdwr/test$ sudo insmod mdriver.ko 
+wiki@pi:~/Linux-Kernel-Programming-Part-2/ch1/miscdrv_rdwr/test$ lsmod | grep mdriver
+mdriver                16384  0
+wiki@pi:~/Linux-Kernel-Programming-Part-2/ch1/miscdrv_rdwr/test$ sudo dmesg
+[10214.944966] Test driver with major #10 reg. minor# = 121
+                dev node is /dev/test_driver
+wiki@pi:~/Linux-Kernel-Programming-Part-2/ch1/miscdrv_rdwr/test$ ./test 
+Usage: ./test opt=read/write device_file ["secret-msg"]
+ opt = 'r' => we shall issue the read(2), retrieving the 'secret' form the driver
+ opt = 'w' => we shall issue the write(2), writing the secret message <secret-msg>
+  (max 128 bytes)
+wiki@pi:~/Linux-Kernel-Programming-Part-2/ch1/miscdrv_rdwr/test$ ./test r /dev/test_driver 
+Device file /dev/test_driver opened (in read-only mode): fd=3
+./test: read 12 bytes from /dev/test_driver
+The 'secret' is:
+ "Hello Prince"
+wiki@pi:~/Linux-Kernel-Programming-Part-2/ch1/miscdrv_rdwr/test$ ./test w /dev/test_driver "Time is illusion."
+Device file /dev/test_driver opened (in write-only mode): fd=3
+./test: wrote 18 bytes to /dev/test_driver
+wiki@pi:~/Linux-Kernel-Programming-Part-2/ch1/miscdrv_rdwr/test$ sudo dmesg
+[10214.944966] Test driver with major #10 reg. minor# = 121
+                dev node is /dev/test_driver
+[10245.167024] misc test_driver:  opening /dev/test_driver now, wrt open file: f_flags = 0x20000
+[10245.167265] misc test_driver: test wants to read 128 bytes
+[10245.167279] misc test_driver:  12 bytes read, returning... (stats: tx=12, rx=0)
+[10245.167317] misc test_driver:  filename: "/dev/test_driver"
+[10272.388530] misc test_driver:  opening /dev/test_driver now, wrt open file: f_flags = 0x20001
+[10272.388791] misc test_driver: test wants to write 18 bytes
+[10272.388807] misc test_driver:  18 bytes written, returning... (stats: tx=12, rx=18)
+[10272.388841] misc test_driver:  filename: "/dev/test_driver"
+wiki@pi:~/Linux-Kernel-Programming-Part-2/ch1/miscdrv_rdwr/test$ ./test r /dev/test_driver 
+Device file /dev/test_driver opened (in read-only mode): fd=3
+./test: read 17 bytes from /dev/test_driver
+The 'secret' is:
+ "Time is illusion."
+wiki@pi:~/Linux-Kernel-Programming-Part-2/ch1/miscdrv_rdwr/test$ sudo dmesg
+[10214.944966] Test driver with major #10 reg. minor# = 121
+                dev node is /dev/test_driver
+[10245.167024] misc test_driver:  opening /dev/test_driver now, wrt open file: f_flags = 0x20000
+[10245.167265] misc test_driver: test wants to read 128 bytes
+[10245.167279] misc test_driver:  12 bytes read, returning... (stats: tx=12, rx=0)
+[10245.167317] misc test_driver:  filename: "/dev/test_driver"
+[10272.388530] misc test_driver:  opening /dev/test_driver now, wrt open file: f_flags = 0x20001
+[10272.388791] misc test_driver: test wants to write 18 bytes
+[10272.388807] misc test_driver:  18 bytes written, returning... (stats: tx=12, rx=18)
+[10272.388841] misc test_driver:  filename: "/dev/test_driver"
+[10285.572188] misc test_driver:  opening /dev/test_driver now, wrt open file: f_flags = 0x20000
+[10285.572511] misc test_driver: test wants to read 128 bytes
+[10285.572528] misc test_driver:  17 bytes read, returning... (stats: tx=29, rx=18)
+[10285.572572] misc test_driver:  filename: "/dev/test_driver"
+wiki@pi:~/Linux-Kernel-Programming-Part-2/ch1/miscdrv_rdwr/test$ sudo rmmod mdriver 
+wiki@pi:~/Linux-Kernel-Programming-Part-2/ch1/miscdrv_rdwr/test$ sudo dmesg
+[10214.944966] Test driver with major #10 reg. minor# = 121
+                dev node is /dev/test_driver
+[10245.167024] misc test_driver:  opening /dev/test_driver now, wrt open file: f_flags = 0x20000
+[10245.167265] misc test_driver: test wants to read 128 bytes
+[10245.167279] misc test_driver:  12 bytes read, returning... (stats: tx=12, rx=0)
+[10245.167317] misc test_driver:  filename: "/dev/test_driver"
+[10272.388530] misc test_driver:  opening /dev/test_driver now, wrt open file: f_flags = 0x20001
+[10272.388791] misc test_driver: test wants to write 18 bytes
+[10272.388807] misc test_driver:  18 bytes written, returning... (stats: tx=12, rx=18)
+[10272.388841] misc test_driver:  filename: "/dev/test_driver"
+[10285.572188] misc test_driver:  opening /dev/test_driver now, wrt open file: f_flags = 0x20000
+[10285.572511] misc test_driver: test wants to read 128 bytes
+[10285.572528] misc test_driver:  17 bytes read, returning... (stats: tx=29, rx=18)
+[10285.572572] misc test_driver:  filename: "/dev/test_driver"
+[10305.791340] Driver is de-registered.
+wiki@pi:~/Linux-Kernel-Programming-Part-2/ch1/miscdrv_rdwr/test$ 
+```
+
+
+
